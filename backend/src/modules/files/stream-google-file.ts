@@ -20,9 +20,14 @@ function withExtension(fileName: string, extension: string) {
   return fileName.toLowerCase().endsWith(extension) ? fileName : `${fileName}${extension}`
 }
 
+function normalizeHeaders(headers: Headers | Record<string, string>) {
+  if (headers instanceof Headers) return Object.fromEntries(headers.entries())
+  return headers
+}
+
 export async function streamGoogleFile(file: FileWithAccount, range: string | undefined, res: Response, options: StreamOptions = {}) {
   const auth = await getAuthedGoogleClient(file.connectedAccount)
-  const headers = await auth.getRequestHeaders()
+  const headers = normalizeHeaders(await auth.getRequestHeaders())
   const exportTarget = googleExportMimeTypes[file.mimeType]
   const responseMimeType = exportTarget?.mimeType ?? file.mimeType
   const responseFileName = exportTarget ? withExtension(file.name, exportTarget.extension) : file.name
