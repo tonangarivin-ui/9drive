@@ -19,6 +19,10 @@ import type { FileItem, FolderItem } from '@/data/drive-data'
 
 type BackendFile = { id: string; name: string; mimeType: string; sizeBytes: string; createdAt: string; folderId?: string | null; connectedAccount?: { email: string; provider: string }; folder?: { id: string; name: string } | null }
 type BackendFolder = { id: string; name: string; color: string; parentId?: string | null; updatedAt: string }
+type UploadProgressStatus = 'uploading' | 'done' | 'error' | 'partial'
+type UploadProgressFile = { name: string; size: number; percent: number; status: UploadProgressStatus }
+type UploadProgressState = { open: boolean; fileName: string; percent: number; status: UploadProgressStatus; files: UploadProgressFile[] }
+type UploadResult = { file?: unknown; files?: unknown[]; failed?: Array<{ fileName?: string }> }
 
 const folderColors = ['text-blue-500', 'text-lime-500', 'text-cyan-400', 'text-yellow-400', 'text-orange-500']
 
@@ -35,6 +39,16 @@ function mapFile(file: BackendFile): FileItem {
 
 function mapFolder(folder: BackendFolder): FolderItem {
   return { id: folder.id, name: folder.name, color: folder.color, updated: `Updated ${formatDate(folder.updatedAt)}` }
+}
+
+function estimateUploadProgress(files: File[], percent: number, status: UploadProgressStatus): UploadProgressFile[] {
+  const totalBytes = Math.max(files.reduce((total, file) => total + file.size, 0), 1)
+  let loadedBytes = (totalBytes * percent) / 100
+  return files.map((file) => {
+    const loadedForFile = Math.min(file.size, Math.max(0, loadedBytes))
+    loadedBytes -= file.size
+    return { name: file.name, size: file.size, percent: status === 'done' ? 100 : Math.min(99, Math.round((loadedForFile / Math.max(file.size, 1)) * 100)), status }
+  })
 }
 
 export function AllFilesPage() {
@@ -71,7 +85,7 @@ export function AllFilesPage() {
   const [emptyContextMenu, setEmptyContextMenu] = useState<{ x: number; y: number; open: boolean }>({ x: 0, y: 0, open: false })
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState<{ open: boolean; fileName: string; percent: number; status: 'uploading' | 'done' | 'error' }>({ open: false, fileName: '', percent: 0, status: 'uploading' })
+  const [uploadProgress, setUploadProgress] = useState<UploadProgressState>({ open: false, fileName: '', percent: 0, status: 'uploading', files: [] })
   const previewVideoRef = useRef<HTMLVideoElement | null>(null)
 
   async function loadFiles() {
@@ -144,11 +158,13 @@ export function AllFilesPage() {
       const filesMeta = selectedFiles.map((file, index) => ({ fieldName: `file-${index}`, fileName: file.name, mimeType: file.type || 'application/octet-stream', sizeBytes: String(file.size), folderId: targetFolderId || undefined }))
       form.append('filesMeta', JSON.stringify(filesMeta))
       selectedFiles.forEach((file, index) => form.append(`file-${index}`, file))
-      setUploadProgress({ open: true, fileName: selectedFiles.length === 1 ? selectedFiles[0].name : `${selectedFiles.length} files`, percent: 0, status: 'uploading' })
-      const uploadResult = await uploadWithProgress(form, (percent) => setUploadProgress((current) => ({ ...current, percent })))
+      const uploadingFiles = [...selectedFiles]
+      setUploadProgress({ open: true, fileName: uploadingFiles.length === 1 ? uploadingFiles[0].name : `${uploadingFiles.length} files`, percent: 0, status: 'uploading', files: estimateUploadProgress(uploadingFiles, 0, 'uploading') })
+      const uploadResult = await uploadWithProgress(form, (percent) => setUploadProgress((current) => ({ ...current, percent, files: estimateUploadProgress(uploadingFiles, percent, 'uploading') })))
       const uploadedCount = uploadResult.files?.length ?? (uploadResult.file ? 1 : selectedFiles.length)
       const failedCount = uploadResult.failed?.length ?? 0
-      setUploadProgress((current) => ({ ...current, percent: 100, status: 'done' }))
+      const failedNames = new Set((uploadResult.failed ?? []).map((file) => file.fileName).filter(Boolean))
+      setUploadProgress((current) => ({ ...current, percent: 100, status: failedCount > 0 ? 'partial' : 'done', files: uploadingFiles.map((file) => ({ name: file.name, size: file.size, percent: failedNames.has(file.name) ? 0 : 100, status: failedNames.has(file.name) ? 'error' : 'done' })) }))
       setSelectedFiles([])
       setSelectedFolderId('')
       setUploadOpen(false)
@@ -156,7 +172,7 @@ export function AllFilesPage() {
       await loadFiles()
       window.dispatchEvent(new Event('9drive:storage-changed'))
     } catch (error) {
-      setUploadProgress((current) => ({ ...current, status: 'error' }))
+      setUploadProgress((current) => ({ ...current, status: 'error', files: current.files.map((file) => ({ ...file, status: 'error' })) }))
       setMessage(error instanceof Error ? error.message : 'Upload failed')
     } finally {
       setLoading(false)
@@ -183,7 +199,7 @@ export function AllFilesPage() {
   }
 
   function uploadWithProgress(form: FormData, onProgress: (percent: number) => void) {
-    return new Promise<{ file?: unknown; files?: unknown[]; failed?: unknown[] }>((resolve, reject) => {
+    return new Promise<UploadResult>((resolve, reject) => {
       const request = new XMLHttpRequest()
       request.open('POST', `${API_URL}/uploads`)
       const token = getAccessToken()
@@ -193,7 +209,7 @@ export function AllFilesPage() {
         onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)))
       }
       request.onload = () => {
-        if (request.status >= 200 && request.status < 300) resolve(JSON.parse(request.responseText || '{}') as { file?: unknown; files?: unknown[]; failed?: unknown[] })
+        if (request.status >= 200 && request.status < 300) resolve(JSON.parse(request.responseText || '{}') as UploadResult)
         else {
           const error = JSON.parse(request.responseText || '{}') as { message?: string }
           reject(new Error(error.message ?? 'Upload failed'))
@@ -346,7 +362,7 @@ export function AllFilesPage() {
             <Input type="file" className="sr-only" multiple onChange={(event) => selectUploadFiles(event.target.files)} required={selectedFiles.length === 0} />
           </label>
           {activeFolder ? <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">Uploading to: <b>{activeFolder.name}</b></p> : <label className="grid gap-2 text-sm font-semibold">Virtual Folder<select className="h-11 rounded-xl border border-slate-200 px-3 text-sm" value={selectedFolderId} onChange={(event) => setSelectedFolderId(event.target.value)}><option value="">No folder</option>{allFolders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label>}
-          {selectedFiles.length > 0 ? <div className="grid gap-2 rounded-xl bg-slate-50 p-3 text-sm text-slate-600"><div className="flex items-center justify-between gap-3"><span className="font-bold text-slate-950">{selectedFiles.length} selected</span><span>{formatBytes(selectedFiles.reduce((total, file) => total + file.size, 0))}</span></div>{selectedFiles.map((file, index) => <div key={`${file.name}-${file.size}-${index}`} className="flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2"><span className="truncate">{file.name} - {formatBytes(file.size)}</span><button type="button" className="text-slate-500 hover:text-red-600" onClick={() => removeUploadFile(index)} aria-label={`Remove ${file.name}`}><X className="h-4 w-4" /></button></div>)}</div> : null}
+          {selectedFiles.length > 0 ? <div className="grid max-h-56 gap-2 overflow-y-auto rounded-xl bg-slate-50 p-3 text-sm text-slate-600"><div className="flex items-center justify-between gap-3"><span className="font-bold text-slate-950">{selectedFiles.length} selected</span><span className="shrink-0">{formatBytes(selectedFiles.reduce((total, file) => total + file.size, 0))}</span></div>{selectedFiles.map((file, index) => <div key={`${file.name}-${file.size}-${index}`} className="flex min-w-0 items-center justify-between gap-3 rounded-lg bg-white px-3 py-2"><span className="min-w-0 flex-1 truncate" title={file.name}>{file.name}</span><span className="shrink-0 text-xs text-slate-500">{formatBytes(file.size)}</span><button type="button" className="shrink-0 text-slate-500 hover:text-red-600" onClick={() => removeUploadFile(index)} aria-label={`Remove ${file.name}`}><X className="h-4 w-4" /></button></div>)}</div> : null}
           <div className="flex justify-end gap-3"><Button type="button" variant="outline" onClick={() => setUploadOpen(false)}>Cancel</Button><Button disabled={loading || selectedFiles.length === 0}>{loading ? 'Uploading...' : `Upload${selectedFiles.length > 1 ? ` ${selectedFiles.length} files` : ''}`}</Button></div>
         </form>
       </DummyModal>
@@ -372,11 +388,11 @@ export function AllFilesPage() {
         </div>
       </DummyModal>
       {uploadProgress.open ? (
-        <div className="fixed bottom-5 right-5 z-[70] w-[min(360px,calc(100vw-2.5rem))] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-900/20">
+        <div className="fixed bottom-5 right-5 z-[70] w-[min(420px,calc(100vw-2.5rem))] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-900/20">
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
             <div className="flex items-center gap-2 font-extrabold">
-              {uploadProgress.status === 'done' ? <CheckCircle className="h-5 w-5 text-emerald-500" /> : <Upload className="h-5 w-5 text-blue-600" />}
-              {uploadProgress.status === 'done' ? 'Upload complete' : uploadProgress.status === 'error' ? 'Upload failed' : 'Uploading file'}
+              {uploadProgress.status === 'done' ? <CheckCircle className="h-5 w-5 text-emerald-500" /> : uploadProgress.status === 'partial' || uploadProgress.status === 'error' ? <X className="h-5 w-5 text-red-500" /> : <Upload className="h-5 w-5 text-blue-600" />}
+              {uploadProgress.status === 'done' ? 'Upload complete' : uploadProgress.status === 'partial' ? 'Upload completed with errors' : uploadProgress.status === 'error' ? 'Upload failed' : 'Uploading files'}
             </div>
             <div className="flex items-center gap-1">
               <Button variant="ghost" size="icon" className="h-8 w-8"><ChevronDown className="h-4 w-4" /></Button>
@@ -389,8 +405,9 @@ export function AllFilesPage() {
               <span className="text-slate-500">{uploadProgress.percent}%</span>
             </div>
             <div className="mt-3 h-2 rounded-full bg-slate-100">
-              <div className={uploadProgress.status === 'error' ? 'h-full rounded-full bg-red-500' : 'h-full rounded-full bg-blue-600'} style={{ width: `${uploadProgress.percent}%` }} />
+              <div className={uploadProgress.status === 'error' || uploadProgress.status === 'partial' ? 'h-full rounded-full bg-red-500' : uploadProgress.status === 'done' ? 'h-full rounded-full bg-emerald-500' : 'h-full rounded-full bg-blue-600'} style={{ width: `${uploadProgress.percent}%` }} />
             </div>
+            {uploadProgress.files.length > 0 ? <div className="mt-4 grid max-h-64 gap-3 overflow-y-auto pr-1">{uploadProgress.files.map((file, index) => <div key={`${file.name}-${file.size}-${index}`} className="grid gap-1 rounded-xl bg-slate-50 p-3"><div className="flex min-w-0 items-center justify-between gap-3 text-sm"><p className="min-w-0 flex-1 truncate font-semibold" title={file.name}>{file.name}</p><span className="shrink-0 text-xs text-slate-500">{file.percent}%</span></div><div className="flex items-center justify-between gap-3 text-xs text-slate-500"><span>{formatBytes(file.size)}</span><span className={file.status === 'error' ? 'font-semibold text-red-600' : file.status === 'done' ? 'font-semibold text-emerald-600' : 'font-semibold text-blue-600'}>{file.status === 'error' ? 'Failed' : file.status === 'done' ? 'Done' : 'Uploading'}</span></div><div className="h-1.5 rounded-full bg-slate-200"><div className={file.status === 'error' ? 'h-full rounded-full bg-red-500' : file.status === 'done' ? 'h-full rounded-full bg-emerald-500' : 'h-full rounded-full bg-blue-600'} style={{ width: `${file.percent}%` }} /></div></div>)}</div> : null}
           </div>
         </div>
       ) : null}
