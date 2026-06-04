@@ -78,6 +78,27 @@ fileRouter.delete('/batch', async (req: AuthRequest, res, next) => {
   }
 })
 
+fileRouter.get('/shared-links', async (req: AuthRequest, res, next) => {
+  try {
+    const shares = await prisma.fileShare.findMany({
+      where: { userId: req.user!.id, enabled: true, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
+      include: { file: { include: { connectedAccount: { select: { email: true, provider: true } }, folder: { select: { id: true, name: true } } } } },
+      orderBy: { createdAt: 'desc' },
+    })
+    return res.json({
+      shares: shares.filter((share) => share.file.status === 'active').map((share) => ({
+        id: share.id,
+        url: share.token ? `${env.FRONTEND_URL}/public/files/${share.token}` : null,
+        createdAt: share.createdAt.toISOString(),
+        expiresAt: share.expiresAt?.toISOString() ?? null,
+        file: { ...share.file, sizeBytes: share.file.sizeBytes.toString() },
+      })),
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 fileRouter.get('/:id', async (req: AuthRequest, res, next) => {
   try {
     const fileId = String(req.params.id)
