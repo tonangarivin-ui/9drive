@@ -99,7 +99,7 @@ export function PublicFilePage({ embed = false }: { embed?: boolean }) {
   const preview = (
     <div className="flex h-full w-full items-center justify-center">
       {kind === 'image' ? <img src={previewUrl} alt={file.name} className="max-h-full max-w-full object-contain shadow-2xl shadow-black/30" /> : null}
-      {kind === 'video' ? <video ref={videoRef} controls playsInline preload="metadata" className="w-full max-w-6xl rounded-xl bg-black shadow-2xl shadow-black/40"><source src={previewUrl} type={file.mimeType} /></video> : null}
+      {kind === 'video' ? <div className="shared-video-shell"><video ref={videoRef} controls playsInline preload="metadata"><source src={previewUrl} type={file.mimeType} /></video></div> : null}
       {kind === 'document' ? <iframe src={previewUrl} title={file.name} className="h-full w-full border-0 bg-white" /> : null}
       {kind === 'sheet' || !kind ? <UnsupportedPreview file={file} downloadUrl={downloadUrl} /> : null}
     </div>
