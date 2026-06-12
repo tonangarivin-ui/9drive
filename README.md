@@ -6,27 +6,28 @@
 
 ## Features
 
-- React + Vite frontend.
-- Express + TypeScript backend.
-- MySQL database with Prisma migrations.
-- Bearer token authentication.
-- Email/password auth plus Google sign-in/register with automatic first Drive connection.
-- Global Google OAuth config stored encrypted in DB.
-- Optional reCAPTCHA on email/password registration.
+- Google Drive and S3-compatible storage gateway in one virtual storage dashboard.
+- S3-compatible storage support with custom endpoints for providers like MinIO, Cloudflare R2, Wasabi, Backblaze B2, and AWS S3.
 - Direct upload stream to Google Drive. Files are not stored on the server.
 - Google Drive uploads are stored under a root `9drive` folder.
-- S3-compatible storage support with custom endpoints for providers like MinIO, Cloudflare R2, Wasabi, Backblaze B2, and AWS S3.
 - Direct upload stream to S3-compatible storage through the backend without exposing storage credentials to the frontend.
 - Upload routing policies with most-available, round-robin, and priority-order modes.
-- Manual sync from the Google Drive `9drive` folder back into MySQL.
+- External upload API using API keys at `POST /api/v1/uploads`.
+- API key management with one-time secret display, hashed key storage, last-used tracking, and revocation.
+- Email/password auth plus Google sign-in/register with automatic first Drive connection.
 - Multi-account storage quota summary.
 - Quota tracker page.
+- Manual sync from the Google Drive `9drive` folder back into MySQL.
 - Virtual folders.
 - File preview, download, rename, move, and delete actions.
-- API key management with one-time secret display, hashed key storage, last-used tracking, and revocation.
-- External upload API using API keys at `POST /api/v1/uploads`.
 - In-app API documentation with cURL and JavaScript upload examples.
 - Bottom-right upload progress panel.
+- Bearer token authentication.
+- Global Google OAuth config stored encrypted in DB.
+- Optional reCAPTCHA on email/password registration.
+- MySQL database with Prisma migrations.
+- Express + TypeScript backend.
+- React + Vite frontend.
 
 ## Preview
 
