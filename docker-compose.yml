@@ -23,7 +23,7 @@ services:
       mysql:
         condition: service_healthy
     environment:
-      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-root}@mysql:3306/${MYSQL_DATABASE:-9drive}
+      DATABASE_URL: mysql://root:***@mysql:3306/${MYSQL_DATABASE:-9drive}
       APP_PORT: 4000
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change-this-jwt-secret-at-least-32-chars}
@@ -36,6 +36,8 @@ services:
       GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:4000/connected-accounts/google/callback}
     ports:
       - "4000:4000"
+    volumes:
+      - syncthing_data:/data/syncthing:rw
 
   frontend:
     build:
@@ -49,5 +51,22 @@ services:
     ports:
       - "5173:80"
 
+  syncthing:
+    image: syncthing/syncthing:latest
+    restart: unless-stopped
+    environment:
+      PUID: 1000
+      PGID: 1000
+    ports:
+      - "8384:8384"    # Web UI
+      - "22000:22000/tcp"  # TCP transfers
+      - "22000:22000/udp"  # QUIC transfers
+      - "21027:21027/udp"  # Local discovery
+    volumes:
+      - syncthing_config:/var/syncthing/config
+      - syncthing_data:/var/syncthing/data
+
 volumes:
   mysql_data:
+  syncthing_config:
+  syncthing_data:
