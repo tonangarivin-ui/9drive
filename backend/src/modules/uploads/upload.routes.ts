@@ -7,6 +7,7 @@ import { prisma } from '../../config/prisma.js'
 import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.js'
 import { ensureGoogleAppFolder, getAuthedGoogleClient, syncGoogleQuota } from '../google/google.service.js'
 import { buildS3ObjectKey, getS3ConfigForAccount, syncS3Quota, uploadS3Object } from '../s3/s3.service.js'
+import { buildSyncthingPath, getSyncthingConfig, syncSyncthingQuota, uploadSyncthingFile } from '../syncthing/syncthing.service.js'
 
 export const uploadRouter = Router()
 
@@ -42,18 +43,19 @@ function byPriority<T extends { account: { id: string; createdAt: Date } }>(item
 
 async function selectAccount(userId: string, sizeBytes: bigint, reservedBytesByAccount = new Map<string, bigint>()) {
   const accounts = await prisma.connectedAccount.findMany({
-    where: { userId, provider: { in: ['google_drive', 's3'] }, status: 'connected' },
+    where: { userId, provider: { in: ['google_drive', 's3', 'syncthing'] }, status: 'connected' },
     include: { storageAccount: true },
   })
 
   const stale = accounts.filter((account) => !account.storageAccount?.lastSyncedAt || account.storageAccount.lastSyncedAt.getTime() < Date.now() - 5 * 60_000)
   for (const account of stale) {
     if (account.provider === 's3') await syncS3Quota(account.id)
+    else if (account.provider === 'syncthing') await syncSyncthingQuota(account.id)
     else await syncGoogleQuota(account.id)
   }
 
   const fresh = await prisma.connectedAccount.findMany({
-    where: { userId, provider: { in: ['google_drive', 's3'] }, status: 'connected' },
+    where: { userId, provider: { in: ['google_drive', 's3', 'syncthing'] }, status: 'connected' },
     include: { storageAccount: true },
   })
 
@@ -159,15 +161,26 @@ export async function handleUpload(req: AuthRequest, res: Response, next: NextFu
         })
 
         let providerFileId = ''
-        let s3FileId: string | null = null
+        let localFileId: string | null = null
         let uploadedName = fileName
         let uploadedMimeType = meta.mimeType
-        if (account.provider === 's3') {
+        if (account.provider === 'syncthing') {
+          const config = await getSyncthingConfig(account.id, req.user!.id)
+          const provisionalFile = await prisma.file.create({
+            data: { userId: req.user!.id, connectedAccountId: account.id, folderId, provider: 'syncthing', providerFileId: 'pending', name: fileName, mimeType: meta.mimeType, sizeBytes: meta.sizeBytes, status: 'uploading' },
+          })
+          localFileId = provisionalFile.id
+          providerFileId = buildSyncthingPath(req.user!.id, provisionalFile.id, fileName)
+          await uploadSyncthingFile(config, providerFileId, fileStream)
+          await prisma.file.update({ where: { id: provisionalFile.id }, data: { providerFileId, status: 'active' } })
+          completed.push({ ...provisionalFile, providerFileId, status: 'active', sizeBytes: provisionalFile.sizeBytes.toString() })
+          logUpload('syncthing upload completed', { sessionId: session.id, accountId: account.id, fileName })
+        } else if (account.provider === 's3') {
           const config = await getS3ConfigForAccount(account.id, req.user!.id)
           const provisionalFile = await prisma.file.create({
             data: { userId: req.user!.id, connectedAccountId: account.id, folderId, provider: 's3', providerFileId: 'pending', name: fileName, mimeType: meta.mimeType, sizeBytes: meta.sizeBytes, status: 'uploading' },
           })
-          s3FileId = provisionalFile.id
+          localFileId = provisionalFile.id
           providerFileId = buildS3ObjectKey(config, req.user!.id, provisionalFile.id, fileName)
           await uploadS3Object(config, providerFileId, fileStream, meta.mimeType)
           await prisma.file.update({ where: { id: provisionalFile.id }, data: { providerFileId, status: 'active' } })
@@ -189,19 +202,20 @@ export async function handleUpload(req: AuthRequest, res: Response, next: NextFu
         }
 
         if (streamedBytes !== meta.sizeBytes) {
-          if (s3FileId) await prisma.file.update({ where: { id: s3FileId }, data: { status: 'deleted', deletedAt: new Date() } }).catch(() => undefined)
+          if (localFileId) await prisma.file.update({ where: { id: localFileId }, data: { status: 'deleted', deletedAt: new Date() } }).catch(() => undefined)
           await prisma.uploadSession.update({ where: { id: session.id }, data: { status: 'failed', errorMessage: 'Streamed byte count did not match declared size.' } })
           failed.push({ fileName, code: 'UPLOAD_SIZE_MISMATCH', message: 'Streamed byte count did not match declared size.' })
           return
         }
 
-        const file = account.provider === 's3' ? null : await prisma.file.create({ data: { userId: req.user!.id, connectedAccountId: account.id, folderId, provider: 'google_drive', providerFileId, name: uploadedName, mimeType: uploadedMimeType, sizeBytes: meta.sizeBytes } })
+        const file = (account.provider === 's3' || account.provider === 'syncthing') ? null : await prisma.file.create({ data: { userId: req.user!.id, connectedAccountId: account.id, folderId, provider: 'google_drive', providerFileId, name: uploadedName, mimeType: uploadedMimeType, sizeBytes: meta.sizeBytes } })
         if (file) {
           logUpload('database file created', { sessionId: session.id, fileId: file.id, accountId: account.id })
           completed.push({ ...file, sizeBytes: file.sizeBytes.toString() })
         }
         await prisma.uploadSession.update({ where: { id: session.id }, data: { status: 'completed', completedAt: new Date() } })
         if (account.provider === 's3') syncS3Quota(account.id).catch(() => undefined)
+        else if (account.provider === 'syncthing') syncSyncthingQuota(account.id).catch(() => undefined)
         else syncQuotaInBackground(account.id, session.id)
       } catch (error) {
         fileStream.resume()

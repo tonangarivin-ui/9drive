@@ -8,6 +8,7 @@ import { decryptText, encryptText, hashToken, randomToken } from '../../utils/cr
 import { hashPassword } from '../../utils/password.js'
 import { createOAuthClient, syncGoogleQuota } from '../google/google.service.js'
 import { syncS3Quota, testS3Connection } from '../s3/s3.service.js'
+import { syncSyncthingQuota, testSyncthingConnection } from '../syncthing/syncthing.service.js'
 
 export const connectedAccountRouter = Router()
 
@@ -22,8 +23,18 @@ const s3ConnectSchema = z.object({
   quotaBytes: z.string().regex(/^\d+$/).optional().nullable(),
 })
 
+const syncthingConnectSchema = z.object({
+  name: z.string().trim().min(1).max(191),
+  apiUrl: z.string().url(),
+  apiKey: z.string().min(1),
+  folderId: z.string().min(1),
+  folderPath: z.string().min(1),
+  quotaBytes: z.string().regex(/^\d+$/).optional().nullable(),
+})
+
 async function syncQuotaForAccount(account: { id: string; provider: string }) {
   if (account.provider === 's3') return syncS3Quota(account.id)
+  if (account.provider === 'syncthing') return syncSyncthingQuota(account.id)
   return syncGoogleQuota(account.id)
 }
 
@@ -288,6 +299,74 @@ connectedAccountRouter.post('/:id/sync-quota', requireAuth, async (req: AuthRequ
         usedBytes: quota.usedBytes.toString(),
         availableBytes: quota.availableBytes?.toString() ?? null,
         trashBytes: quota.trashBytes?.toString() ?? null,
+      },
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+connectedAccountRouter.post('/syncthing', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const body = syncthingConnectSchema.parse(req.body)
+    const providerAccountId = body.folderId
+
+    // Test connection first
+    await testSyncthingConnection(body.apiUrl, body.apiKey)
+
+    const providerConfig = await prisma.providerConfig.findFirstOrThrow({ where: { provider: 'google_drive', status: 'active' }, orderBy: { createdAt: 'desc' } })
+    const existingAccount = await prisma.connectedAccount.findUnique({ where: { userId_provider_providerAccountId: { userId: req.user!.id, provider: 'syncthing', providerAccountId } } })
+    const account = existingAccount
+      ? await prisma.connectedAccount.update({
+        where: { id: existingAccount.id },
+        data: {
+          providerConfigId: providerConfig.id,
+          email: `${body.folderId} (Syncthing)`,
+          displayName: body.folderPath,
+          accessTokenEncrypted: encryptText(body.apiUrl),
+          refreshTokenEncrypted: encryptText(body.apiKey),
+          tokenExpiresAt: new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
+          scopes: [],
+          status: 'connected',
+        },
+      })
+      : await prisma.connectedAccount.create({ data: {
+        userId: req.user!.id,
+        providerConfigId: providerConfig.id,
+        provider: 'syncthing',
+        providerAccountId,
+        email: `${body.folderId} (Syncthing)`,
+        displayName: body.folderPath,
+        accessTokenEncrypted: encryptText(body.apiUrl),
+        refreshTokenEncrypted: encryptText(body.apiKey),
+        tokenExpiresAt: new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000),
+        scopes: [],
+        status: 'connected',
+      } })
+
+    // Set quota if provided
+    if (body.quotaBytes) {
+      await prisma.storageAccount.upsert({
+        where: { connectedAccountId: account.id },
+        create: {
+          connectedAccountId: account.id,
+          totalBytes: BigInt(body.quotaBytes),
+          usedBytes: 0n,
+          availableBytes: BigInt(body.quotaBytes),
+          lastSyncedAt: new Date(),
+        },
+        update: {
+          totalBytes: BigInt(body.quotaBytes),
+          lastSyncedAt: new Date(),
+        },
+      })
+    }
+
+    const quota = await syncSyncthingQuota(account.id)
+    return res.status(201).json({
+      account: {
+        ...account,
+        storageAccount: { ...quota, totalBytes: quota.totalBytes?.toString() ?? null, usedBytes: quota.usedBytes.toString(), availableBytes: quota.availableBytes?.toString() ?? null, trashBytes: quota.trashBytes?.toString() ?? null },
       },
     })
   } catch (error) {

@@ -7,6 +7,7 @@ import { requireAuth, type AuthRequest } from '../../middleware/auth.middleware.
 import { hashToken, randomToken } from '../../utils/crypto.js'
 import { getAuthedGoogleClient, syncGoogleAppFolderFiles, syncGoogleQuota } from '../google/google.service.js'
 import { deleteS3Object, syncS3Quota } from '../s3/s3.service.js'
+import { deleteSyncthingFile, syncSyncthingQuota } from '../syncthing/syncthing.service.js'
 import { streamProviderFile } from './stream-file.js'
 
 export const fileRouter = Router()
@@ -61,6 +62,7 @@ fileRouter.delete('/batch', async (req: AuthRequest, res, next) => {
     for (const file of files) {
       try {
         if (file.provider === 's3') await deleteS3Object(file)
+        else if (file.provider === 'syncthing') await deleteSyncthingFile(file)
         else {
           const auth = await getAuthedGoogleClient(file.connectedAccount)
           const drive = google.drive({ version: 'v3', auth })
@@ -223,6 +225,7 @@ fileRouter.delete('/:id', async (req: AuthRequest, res, next) => {
     const fileId = String(req.params.id)
     const file = await prisma.file.findFirstOrThrow({ where: { id: fileId, userId: req.user!.id }, include: { connectedAccount: true } })
     if (file.provider === 's3') await deleteS3Object(file)
+    else if (file.provider === 'syncthing') await deleteSyncthingFile(file)
     else {
       const auth = await getAuthedGoogleClient(file.connectedAccount)
       const drive = google.drive({ version: 'v3', auth })
@@ -230,6 +233,7 @@ fileRouter.delete('/:id', async (req: AuthRequest, res, next) => {
     }
     await prisma.file.update({ where: { id: file.id }, data: { status: 'deleted', deletedAt: new Date() } })
     if (file.provider === 's3') await syncS3Quota(file.connectedAccountId)
+    else if (file.provider === 'syncthing') await syncSyncthingQuota(file.connectedAccountId)
     else await syncGoogleQuota(file.connectedAccountId)
     return res.json({ status: 'ok' })
   } catch (error) {
